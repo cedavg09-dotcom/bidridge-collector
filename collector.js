@@ -710,7 +710,9 @@ async function collectSamGov() {
 
   const postedTo = new Date();
   const postedFrom = new Date(postedTo);
-  postedFrom.setDate(postedFrom.getDate() - 365);
+  // SAM.gov rejects a full 365-day interval in some years because its API
+  // counts both boundary dates. Stay one day inside the documented limit.
+  postedFrom.setDate(postedFrom.getDate() - 364);
 
   const params = new URLSearchParams({
     api_key: apiKey,

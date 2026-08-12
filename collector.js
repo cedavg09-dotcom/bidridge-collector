@@ -415,6 +415,50 @@ function enrichNormalizedOpportunity(o) {
   };
 }
 
+async function geocodeOpportunity(o) {
+  if (Number.isFinite(Number(o.latitude)) && Number.isFinite(Number(o.longitude))) return o;
+  const postal = clean(o.postal_code || "").match(/^\d{5}/)?.[0] || null;
+  const city = clean(o.city || "");
+  const state = clean(o.state || "");
+  const cacheKey = `geocode:${postal || `${city.toLowerCase()}|${state.toLowerCase()}`}`;
+  if (COLLECTOR_CACHE[cacheKey]) return { ...o, ...COLLECTOR_CACHE[cacheKey] };
+
+  let latitude = null;
+  let longitude = null;
+  try {
+    if (postal) {
+      const res = await fetch(`https://api.zippopotam.us/us/${encodeURIComponent(postal)}`, {
+        headers: { Accept: "application/json", "User-Agent": HEADERS["User-Agent"] }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const place = data.places?.[0];
+        latitude = Number(place?.latitude);
+        longitude = Number(place?.longitude);
+      }
+    }
+
+    if ((!Number.isFinite(latitude) || !Number.isFinite(longitude)) && city && state) {
+      const params = new URLSearchParams({ city, state, country: "United States", format: "jsonv2", limit: "1" });
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
+        headers: { Accept: "application/json", "User-Agent": "BidRidgeCollector/1.0 (public procurement geocoding)" }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        latitude = Number(data?.[0]?.lat);
+        longitude = Number(data?.[0]?.lon);
+      }
+      await sleep(1100);
+    }
+  } catch {}
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return o;
+  const result = { latitude, longitude };
+  COLLECTOR_CACHE[cacheKey] = result;
+  saveCollectorCache();
+  return { ...o, ...result };
+}
+
 function projectDataQuality(o) {
   let score = 0;
   const flags = [];
@@ -450,6 +494,7 @@ function projectLifecycleFor(o) {
 
 async function ingestOpportunity(o) {
   o = enrichNormalizedOpportunity(o);
+  o = await geocodeOpportunity(o);
   const quality = projectDataQuality(o);
 
   const source = await ensureSource(o);
@@ -502,6 +547,8 @@ async function ingestOpportunity(o) {
       city: o.city || null,
       state: o.state || "TX",
       postal_code: o.postal_code || null,
+      latitude: Number.isFinite(Number(o.latitude)) ? Number(o.latitude) : null,
+      longitude: Number.isFinite(Number(o.longitude)) ? Number(o.longitude) : null,
       estimated_value: Number(o.estimated_value || o.value || 0) || null,
       earliest_known_date: o.posted_date || o.expected_bid_date || null,
       expected_bid_date: o.expected_bid_date || o.deadline || null,
@@ -533,6 +580,8 @@ async function ingestOpportunity(o) {
         project_type: o.project_type || project.project_type,
         city: project.city || o.city || null,
         postal_code: project.postal_code || o.postal_code || null,
+        latitude: Number.isFinite(Number(o.latitude)) ? Number(o.latitude) : project.latitude,
+        longitude: Number.isFinite(Number(o.longitude)) ? Number(o.longitude) : project.longitude,
         expected_bid_date: o.expected_bid_date || o.deadline || project.expected_bid_date,
         estimated_value: Number(o.estimated_value || o.value || 0) || project.estimated_value,
         lifecycle_stage: projectLifecycleFor(o),

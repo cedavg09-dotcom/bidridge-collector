@@ -2049,6 +2049,114 @@ async function collectBonfirePortal(entry) {
   return { projects:projects.length, saved, rejected, failed };
 }
 
+function extractJsonArrayAfterMarker(text, marker) {
+  const markerIndex = text.indexOf(marker);
+  if (markerIndex < 0) return [];
+  const start = text.indexOf("[", markerIndex + marker.length);
+  if (start < 0) return [];
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "[") depth++;
+    else if (ch === "]") {
+      depth--;
+      if (depth === 0) {
+        try { return JSON.parse(text.slice(start, i + 1)); }
+        catch { return []; }
+      }
+    }
+  }
+  return [];
+}
+
+function parseOpenGovProjects(html) {
+  // OpenGov's public embed page includes its public project rows in the
+  // server-rendered hydration state. Extract only that JSON array; the rest of
+  // the state contains JavaScript values and should not be evaluated.
+  return extractJsonArrayAfterMarker(html, '"govProjects":{"count"');
+}
+
+async function collectOpenGovPortal(entry) {
+  const code = new URL(entry.url).pathname.split("/").filter(Boolean).pop();
+  if (!code) throw new Error("OpenGov portal code is missing");
+  const embedUrl = `https://procurement.opengov.com/portal/embed/${encodeURIComponent(code)}/project-list`;
+  const html = await fetchText(embedUrl, {
+    retries: 3,
+    cacheTtlMs: 15 * 60 * 1000,
+    minimumDelayMs: 1800
+  });
+  const projects = parseOpenGovProjects(html);
+  console.log(`  Parsed ${projects.length} public OpenGov project(s) from ${entry.agency}.`);
+
+  let saved = 0;
+  let rejected = 0;
+  let failed = 0;
+
+  for (const project of projects) {
+    const $ = cheerio.load(project.summary || "");
+    const summary = clean($.text());
+    const combined = clean([
+      project.title,
+      project.financialId,
+      project.template?.title,
+      project.department?.name,
+      summary
+    ].filter(Boolean).join(" | "));
+    const score = roofingScore(combined);
+    if (score < 80 || isNonOpportunityText(combined)) {
+      rejected++;
+      continue;
+    }
+
+    const projectId = project.id ? String(project.id) : null;
+    const opp = {
+      title: clean(project.title || "OpenGov Roofing Opportunity").slice(0, 500),
+      description: combined.slice(0, 10000),
+      agency: project.government?.organization?.name || entry.agency,
+      city: project.government?.organization?.city || entry.city || null,
+      state: project.government?.organization?.state || "TX",
+      postal_code: project.government?.organization?.zipCode || null,
+      project_type: "Roofing / Facilities",
+      estimated_value: null,
+      posted_date: dateOnly(project.releaseProjectDate || project.created_at),
+      deadline: dateOnly(project.proposalDeadline),
+      expected_bid_date: dateOnly(project.proposalDeadline),
+      solicitation_number: clean(project.financialId || projectId || "") || null,
+      source: `${entry.agency} OpenGov`,
+      source_type: "local_procurement",
+      source_url: projectId
+        ? `https://procurement.opengov.com/portal/${encodeURIComponent(code)}/projects/${encodeURIComponent(projectId)}`
+        : entry.url,
+      stage: project.status === "open" ? "Solicitation" : clean(project.status || "Notice"),
+      status: project.status === "open" ? "open" : "closed",
+      roofing_relevance: score,
+      last_updated: new Date().toISOString()
+    };
+
+    try {
+      const result = await saveOpportunity(opp);
+      if (result?.saved) saved++;
+      console.log(`  ✓ OpenGov ${entry.agency}: ${opp.title}`);
+    } catch (e) {
+      failed++;
+      console.log(`  ✗ OpenGov ${entry.agency}: ${opp.title}`);
+      console.log(`    ${e.message}`);
+    }
+  }
+
+  return { projects: projects.length, saved, rejected, failed };
+}
+
 async function collectProcurementPlatforms() {
   console.log("\n[5/5] Procurement Platform Connectors");
   console.log(`Checking ${PLATFORM_REGISTRY.length} seeded procurement portals...`);
@@ -2059,6 +2167,7 @@ async function collectProcurementPlatforms() {
 
   let totalSaved = 0;
   let ionwaveBoards = 0;
+  let openGovSaved = 0;
   const blocked = [];
 
   for (const entry of PLATFORM_REGISTRY) {
@@ -2087,6 +2196,18 @@ async function collectProcurementPlatforms() {
       continue;
     }
 
+    if (entry.platform === "OpenGov") {
+      try {
+        const r = await collectOpenGovPortal(entry);
+        openGovSaved += r.saved;
+        totalSaved += r.saved;
+        console.log(`  projects=${r.projects} roofing_saved=${r.saved} rejected=${r.rejected}`);
+      } catch (e) {
+        console.log(`  OpenGov portal failed: ${e.message}`);
+      }
+      continue;
+    }
+
     const p = await probePortal(entry);
     if (p.reachable && !p.looksBlocked) {
       console.log(`  Public portal reachable (HTTP ${p.status}); adapter needed.`);
@@ -2098,6 +2219,7 @@ async function collectProcurementPlatforms() {
 
   console.log("\nPlatform connector summary:");
   console.log(`  IonWave boards processed: ${ionwaveBoards}`);
+  console.log(`  OpenGov saved/updated: ${openGovSaved}`);
   console.log(`  Roofing opportunities saved/updated: ${totalSaved}`);
   if (blocked.length) {
     console.log("  Portals requiring a dedicated public-access adapter or vendor account:");

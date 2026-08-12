@@ -1,0 +1,19 @@
+{
+  "name": "roofing-signal-collector",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Roofing Signal Working V1 collector",
+  "main": "collector.js",
+  "scripts": {
+    "start": "node collector.js",
+    "check": "node --check collector.js && node --check coverage-engine.js",
+    "coverage:preview": "node coverage-engine.js --dry-run",
+    "coverage:check-public": "node coverage-engine.js --check-public",
+    "coverage:install": "node coverage-engine.js",
+    "coverage:probe": "node coverage-engine.js --probe"
+  },
+  "dependencies": {
+    "cheerio": "^1.1.2",
+    "dotenv": "^17.2.1"
+  }
+}

@@ -1,0 +1,48 @@
+name: BidRidge Collector
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 */6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bidridge-collector
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      SAM_GOV_API_KEY: ${{ secrets.SAM_GOV_API_KEY }}
+      ESBD_PAGES: "100"
+      ENABLE_GENERIC_SCHOOLS: "1"
+      ENABLE_GENERIC_PUBLIC_ENTITIES: "1"
+
+    steps:
+      - name: Download collector
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install collector
+        run: npm ci
+
+      - name: Check collector files
+        run: npm run check
+
+      - name: Check monitored sources
+        run: npm run coverage:probe
+
+      - name: Collect roofing opportunities
+        run: npm start
